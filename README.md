@@ -53,7 +53,7 @@ Gemma 4:   273 GB/s ÷ ~8 GB (Active 3.8B, F16)   ≈ 34 t/s theory → 26.5 mea
 | Gemma 4 26B-A4B | F16 | OFF | **96.51%** | 0.376s | 26.7 |
 | Qwen 3.5-35B-A3B | MXFP4 | OFF | 96.16% | **0.236s** | ~60 |
 | Qwen 3.5-35B-A3B | MXFP4 | ON | 89.28% | 13.71s | 60.2 |
-| Gemma 4 26B-A4B | F16 | ON | ❌ Bug | — | — |
+| Gemma 4 26B-A4B | F16 | ON | ❌ Bug (F16-specific, see below) | — | — |
 
 Quality is virtually identical (0.35pt difference). Thinking mode degrades accuracy on knowledge-based tasks for both models.
 
@@ -70,14 +70,28 @@ Quality is virtually identical (0.35pt difference). Thinking mode degrades accur
 
 Both models achieve 100% JSON parse rate across all tasks.
 
-## Known Issue: Gemma 4 Thinking Mode Bug in llama.cpp
+## Known Issue: Gemma 4 Thinking Mode Bug (F16 GGUF)
 
-**Affected:** llama.cpp b8665, Gemma 4 26B-A4B (and likely other Gemma 4 models)
+**Affected:** Gemma 4 26B-A4B F16 GGUF (confirmed on llama.cpp b8665 and b8672)
 **Tracked:** [ggml-org/llama.cpp Discussion #21338](https://github.com/ggml-org/llama.cpp/discussions/21338)
+
+### Update (2026-04-07)
+
+Further testing revealed the bug is **specific to the F16 GGUF**, not a general llama.cpp regression. A clean b8672 rebuild on the same hardware still reproduces the issue with F16, while Q4_K_M works correctly.
+
+| Model | Quant | Backend | Thinking ON |
+|---|---|---|---|
+| Gemma 4 26B-A4B | F16 | CUDA (DGX Spark, b8672) | ❌ `<unused49>` flood |
+| Gemma 4 26B-A4B | Q4_K_M | CUDA (DGX Spark, b8672) | ✅ Works correctly |
+| Gemma 4 26B-A4B | Q4_K_M | Vulkan (Strix Halo gfx1151, b8672) | ✅ Works correctly |
+
+**Workaround:** Use a quantized GGUF (Q4_K_M confirmed working) instead of F16.
+
+Qwen 3.5 Thinking mode works correctly on both CUDA and Vulkan in all quantizations tested.
 
 ### Symptoms
 
-When Thinking mode is active (`thinking = 1` in server logs), Gemma 4 outputs `<unused49>` tokens indefinitely instead of generating reasoning or content:
+When Thinking mode is active (`thinking = 1` in server logs) with the F16 GGUF, Gemma 4 outputs `<unused49>` tokens indefinitely instead of generating reasoning or content:
 
 ```
 content: "<unused49><unused49><unused49>...(fills entire max_tokens)"
@@ -88,11 +102,11 @@ finish_reason: "length"
 ### Reproduction
 
 ```bash
-# Build llama.cpp b8665 with CUDA for GB10
+# Build llama.cpp b8665/b8672 with CUDA for GB10
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 -DGGML_CUDA_F16=ON
 cmake --build build -j$(nproc) --target llama-server
 
-# Start server (thinking = 1 is forced regardless of settings)
+# Start server with F16 GGUF (reproduces the bug)
 ./build/bin/llama-server \
   -m gemma-4-26B-A4B-it-f16.gguf \
   --mmproj mmproj-gemma-4-26B-A4B-it-f16.gguf \
@@ -100,7 +114,7 @@ cmake --build build -j$(nproc) --target llama-server
   --chat-template-kwargs '{"enable_thinking":true}' \
   --port 8080
 
-# Send a request
+# Send a request — F16 produces <unused49> flood
 curl -s http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -108,10 +122,11 @@ curl -s http://localhost:8080/v1/chat/completions \
     "messages": [{"role": "user", "content": "What is 2+2?"}],
     "max_tokens": 256
   }'
-# Result: content is all <unused49> tokens, reasoning_content is empty
+
+# Same command with Q4_K_M GGUF works correctly
 ```
 
-### What We Tried (All Failed to Disable Thinking)
+### What We Tried (All Failed to Disable Thinking with F16)
 
 | Setting | Result |
 |---|---|
@@ -120,26 +135,26 @@ curl -s http://localhost:8080/v1/chat/completions \
 | `--reasoning-format none` | No effect |
 | `--chat-template gemma` (non-Jinja) | `thinking = 0` but multimodal API breaks (tokenization fails) |
 
-### Workaround
+### Workaround (Thinking OFF with F16)
 
 For **text-only** inference with Thinking OFF, using `--chat-template-kwargs '{"enable_thinking":false}'` does work at the output level — despite the server log showing `thinking = 1`, the actual generated content does not contain thinking tokens. We used this setting for JCQ benchmarks (96.51% accuracy).
 
 For **multimodal** (VLM) inference, the same workaround applies — `--jinja` with `enable_thinking: false` produces correct image captions and JSON output.
 
-**Only explicit Thinking ON is broken** — requesting thinking output produces the `<unused49>` flood.
+**Only explicit Thinking ON with F16 is broken** — quantized GGUFs do not exhibit this issue.
 
 ### Environment Details
 
 ```
 llama-server --version
-version: 8665 (b8635075f)
+version: 8665 (b8635075f) / 8672 (25eec6f32)
 built with GNU 13.3.0 for Linux aarch64
 
 GPU: NVIDIA GB10, compute capability 12.1, 122570 MiB
 CUDA 13.0, Driver 580.126.09
 ```
 
-**Note:** Ollama 0.20.0 handles Gemma 4 Thinking mode correctly on the same hardware, suggesting this is a llama.cpp-specific template/parser issue rather than a model or hardware problem.
+**Note:** Ollama 0.20.0 handles Gemma 4 Thinking mode correctly on the same hardware with the same F16 model, suggesting this is a llama.cpp-specific issue in the F16 code path rather than a model problem.
 
 ## Build Instructions (DGX Spark)
 
@@ -213,8 +228,7 @@ python3 vlm_bench.py \
 
 ## Blog Posts
 
-- [Qiita (Japanese)](https://qiita.com/nabe2030/) — Detailed analysis article
-- [Zenn (Japanese)](https://zenn.dev/) — Coming soon
+- [Qiita (Japanese)](https://qiita.com/nabe2030/items/fc3db819470edcca5aee) — Detailed analysis article
 
 ## License
 
