@@ -234,3 +234,86 @@ python3 vlm_bench.py \
 
 Scripts: MIT License
 Benchmark data: See individual dataset licenses.
+## Qwen 3.6 vs 3.5 — DGX Spark Benchmark (2026-04-18)
+
+Three findings from running Qwen 3.6-35B-A3B against 3.5 on DGX Spark with llama.cpp b8672 and MXFP4_MOE quantization (21 GiB each).
+
+### Finding 1: Inference speed is identical (±0.5%)
+
+| Metric | Qwen 3.5 | Qwen 3.6 | Delta |
+|--------|----------|----------|-------|
+| pp512 (t/s) | 2,299.73 | 2,304.22 | +0.2% |
+| tg128 (t/s) | 63.17 | 62.91 | -0.4% |
+
+No regression. Drop-in replacement.
+
+### Finding 2: Long-context prompt processing degradation improved 2.6×
+
+| Prompt length | Qwen 3.5 (t/s) | Qwen 3.6 (t/s) |
+|---------------|----------------|----------------|
+| pp512 | 2,316.82 | 2,268.44 |
+| pp4096 | 2,280.22 | 2,291.70 |
+| pp16384 | 2,172.44 | 2,214.62 |
+| **Degradation (512→16K)** | **-6.2%** | **-2.4%** |
+
+![Long-context prompt processing scaling](charts/chart_pp_scaling.png)
+
+### Finding 3: Thinking mode quality regression is fully resolved
+
+| Model | Thinking OFF | Thinking ON | Delta |
+|-------|-------------|-------------|-------|
+| Qwen 3.5 MXFP4 | 96.16% | 89.28% | **-6.88pt** |
+| Qwen 3.6 MXFP4 | 95.98% | 96.43% | **+0.45pt** |
+| Gemma 4 F16 (ref) | 96.51% | ❌ Bug | — |
+
+Qwen 3.5 lost 6.88 points when Thinking was enabled. Qwen 3.6 **gains** 0.45 points — the regression is completely gone.
+
+![JCQ Thinking ON/OFF comparison](charts/chart_jcq_thinking.png)
+
+Benchmark: [JCommonsenseQA v1.1](https://huggingface.co/datasets/leemeng/jcommonsenseqa-v1.1) (1,119 questions, 5-choice, 3-shot).
+
+### Full JCQ results (all models)
+
+| Model | Quant | Thinking | JCQ Accuracy |
+|-------|-------|----------|--------------|
+| Gemma 4 26B-A4B | F16 | OFF | **96.51%** |
+| **Qwen 3.6** | **MXFP4** | **ON** | **96.43%** |
+| Qwen 3.5 | MXFP4 | OFF | 96.16% |
+| Qwen 3.6 | MXFP4 | OFF | 95.98% |
+| Gemma 4 26B-A4B | Q4_K_M | ON | 95.80% |
+| Qwen 3.5 | MXFP4 | ON | 89.28% |
+| Gemma 4 26B-A4B | F16 | ON | ❌ Bug ([#21338](https://github.com/ggml-org/llama.cpp/discussions/21338)) |
+
+### VLM multimodal
+
+| Task | Qwen 3.5 | Qwen 3.6 | Gemma 4 F16 (ref) |
+|------|----------|----------|-------------------|
+| Caption avg latency | 17.05s | 15.82s | 41.68s |
+| JSON extract latency | 3.82s | 3.92s | 41.31s |
+| JSON parse rate | 100% | 100% | 0% |
+| PPE detect latency | 5.34s | 5.07s | — |
+| PPE parse rate | 100% | 100% | — |
+| tok/s | ~61.4 | ~61.6 | 25.7 |
+
+Note: [Segfault reported](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/discussions/1) for Qwen 3.6 VLM on llama.cpp, but did not reproduce on DGX Spark (b8672, mmproj-F16).
+
+### Environment
+
+- **Hardware**: NVIDIA DGX Spark (Grace Blackwell GB10, 128 GB unified memory)
+- **Runtime**: llama.cpp b8672 (source build, CUDA, `-DCMAKE_CUDA_ARCHITECTURES=121`)
+- **Qwen models**: MXFP4_MOE (21 GiB each)
+- **Gemma 4**: F16 (51 GiB) / Q4_K_M (15.6 GiB)
+
+### Result files
+
+| File | Description |
+|------|-------------|
+| `results/jcq_qwen36_mxfp4_nothink.json` | Qwen 3.6 JCQ Thinking OFF |
+| `results/jcq_qwen36_mxfp4_think.json` | Qwen 3.6 JCQ Thinking ON |
+| `results/jcq_qwen35_mxfp4_nothink.json` | Qwen 3.5 JCQ Thinking OFF |
+| `results/vlm_qwen36.json` | Qwen 3.6 VLM benchmark |
+| `results/vlm_qwen35.json` | Qwen 3.5 VLM benchmark |
+
+### Blog post (Japanese)
+
+- [Qiita: Qwen 3.6 は「地味なアップデート」じゃなかった](https://qiita.com/nabe2030/items/XXXXX) ← URL to be updated after posting
