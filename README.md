@@ -316,4 +316,4 @@ Note: [Segfault reported](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/di
 
 ### Blog post (Japanese)
 
-- [Qiita: Qwen 3.6 は「地味なアップデート」じゃなかった](https://qiita.com/nabe2030/items/XXXXX) ← URL to be updated after posting
+- [Qiita: DGX Spark で Qwen 3.6 vs 3.5 実測比較](https://qiita.com/nabe2030/items/f61bc3627bb92a0388e5) ← URL to be updated after posting
